@@ -177,8 +177,6 @@ bool initModem(const char* pinCode = nullptr) {
 #if DEBUG_ENABLED
   Serial.println("test OK");
 #endif
-  // sendAT(GF("&FZ"));  // Factory + Reset
-  // waitResponse();
   sendAT("E0");  // Echo Off
   if (readFromModemUntilOK() != 1) { return false; }
 
@@ -204,55 +202,11 @@ bool initModem(const char* pinCode = nullptr) {
   String result2;
   if (readFromModem(1000L, result2, "OK") != 1) { model = result2; }
 
-  //TODO
-  //modem.getModemInfo();
-  //modem.getModemName();
-  //modem.getModemRevision();
-  //modem.getModemSerialNumber();
-  //modem.getSimCCID();
-  //modem.getIMEI();
-  //modem.getIMSI();
-
-
   Serial.print(manufacturer);
   Serial.print(" ");
   Serial.print(model);
   Serial.println();
 #endif
-
-  //TODO Enable Local Time Stamp for getting network time
-  //sendAT("+CLTS=1");
-  //if (waitModemResponse(10000L, "OK") != 1) { return false; }
-
-  //TODO Enable battery checks
-  //sendAT("+CBATCHK=1");
-  //waitModemResponse(10000L);
-
-  //TODO sim unlock functionality
-  /*
-    SimStatus ret = getSimStatus();
-    // if the sim isn't ready and a pin has been provided, try to unlock the sim
-    if (ret != SIM_READY && pinCode != nullptr && strlen(pinCode) > 0) {
-      simUnlock(pinCode);
-      return (getSimStatus() == SIM_READY);
-    } else {
-      // if the sim is ready, or it's locked but no pin has been provided,
-      // return true
-      return (ret == SIM_READY || ret == SIM_LOCKED);
-    }
-    */
-
-  //Set ringer sound level
-  //SerialAT.print("AT+CRSL=100\r\n");
-  //delay(2);
-
-  //Set loud speaker volume level
-  //SerialAT.print("AT+CLVL=100\r\n");
-  //delay(2);
-
-  //Calling line identification presentation
-  //sendAT("+CLIP=1");
-  //readFromModemUntilOK();
 
   return true;
 }
@@ -276,12 +230,10 @@ void setupModem() {
 
   Serial1.begin(57600);
 
-  //TinyGsmAutoBaud(Serial1, GSM_AUTOBAUD_MIN, GSM_AUTOBAUD_MAX);
   if (!initModem()) {
 #ifdef DEBUG_ENABLED
     Serial.println("Failed to init modem");
 #endif
-    //TODO
     //modem.restart();
     //Serial.println("Restarting modem...");
     //delay(10000L);
@@ -310,14 +262,12 @@ bool checkModemRegistrationStatus() {
 #endif
   if (status == 2) {
     if (millis() - lastNetworkAvailableMillis > NETWORK_SEARCHING_TIMEOUT) {
-      //TODO
       //modem.restart();
       lastNetworkAvailableMillis = millis();
     }
     return false;
   } else if (status != 1 && status != 5) {
     if (millis() - lastNetworkAvailableMillis > NETWORK_UNAVAILABLE_TIMEOUT) {
-      //TODO
       //modem.restart();
       lastNetworkAvailableMillis = millis();
     }
@@ -327,10 +277,8 @@ bool checkModemRegistrationStatus() {
 
   //TODO
   //String cop = modem.getOperator();
-  //DBG("Operator:", cop);
   //int csq = modem.getSignalQuality(); //### Unhandled: +CIEV: 10,"25501","Vodafone UA","Vodafone UA", 0, 0
-  //DBG("Signal quality:", csq);
-
+  
   return true;
 }
 
@@ -425,7 +373,7 @@ void playBeep(uint8_t count, bool isLong = true) {
   }
 }
 
-//play uploaded in SIM800L sounds, see TCallSoundUpdate
+//play uploaded in SIM800L sounds, see tools/upload-files-to-sim800
 bool playSound(String fileName, uint32_t duration = 2000) {
   uint32_t startMillis = millis();
   LYNK_GSM_YIELD();
