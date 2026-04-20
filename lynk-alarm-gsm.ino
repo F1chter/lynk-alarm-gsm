@@ -1,12 +1,10 @@
-
-//up to 8 numbers
 #define NUMBER_LENGTH 13
-const String ALLOW_INCOME_NUMBERS = "+380501234567+380501234568";
-uint8_t call_to = 0b00000001;  //call to first, 0b00000011 call to first and second, etc
-
-#include "LynkIP5306.h"
 #include <Wire.h>
+#include "LynkIP5306.h"
 #include "LynkGsm.h"
+#include <LittleFS.h>
+#include "LynkFile.h"
+#include "secrets.h"
 
 #define DOOR_SENSOR_PIN 34
 #define SR501_PIN 15
@@ -17,7 +15,12 @@ uint8_t call_to = 0b00000001;  //call to first, 0b00000011 call to first and sec
 //R62 and R11 is not soldered on board
 //#define IP5306_IRQ 39
 
-bool armStatus = false;  //TODO read from memory
+struct Config {
+  uint8_t callTo = 0b00000001; //call to first, 0b00000011 call to first and second, etc
+  bool armStatus = false;
+} config;
+LynkFile configFile(&LittleFS, "/config.cfg", 1, &config, sizeof(config));
+
 bool alarmStatus = false;
 bool doorOpened = false;      //door sensor
 bool motionDetected = false;  //motion sensor
@@ -34,7 +37,6 @@ bool needToRecheckBalance = true;
 bool needToParseBalance = false;
 int balance = -1;
 int dtmfMenu = 0;
-
 
 #define ALARM_DURATION_MS 1000 * 60 * 5  //5min
 #define DOOR_SENSOR_DELAY 5000           //5s display as opened after close for minimize jigle
@@ -58,8 +60,15 @@ void setup() {
   Serial.setDebugOutput(true);
   Serial.println("setup start...");
 
+  Serial.println("==========DEFAULT VALUES==========");
+  printConfig(); // print default values
+  LittleFS.begin(true);
+  FileStatus fileStatus = configFile.init();
+  Serial.println("==========VALUES FROM FLASH==========");
+  printConfig(); // print values from flash
+  
+  analogReadResolution(10);
   pinMode(SR501_PIN, INPUT);
-
   pinMode(LED_PIN, OUTPUT);
   for(int i = 0; i < 3 ; i++) {
     digitalWrite(LED_PIN, HIGH);  //indicate esp started
@@ -114,10 +123,10 @@ void readSensors() {
   if (millis() - lastSensorReadMillis < SENSOR_READ_INTERVAL)
     return;
 
-  int rawAnalogDoorSensor = analogReadMilliVolts(DOOR_SENSOR_PIN);
+  int rawAnalogDoorSensor = analogRead(DOOR_SENSOR_PIN);
   Serial.print("Door sensor value: ");
   Serial.print(rawAnalogDoorSensor);
-  if (rawAnalogDoorSensor < 1600) {
+  if (rawAnalogDoorSensor < 512) {
     doorOpenedCount++;
     lastDoorOpenedDetected = millis();
   } else {
@@ -129,19 +138,17 @@ void readSensors() {
   if (doorOpenedCount >= DOOR_OPENED_COUNT_FIRE) {
     doorOpened = true;
   }
-
   Serial.print("\tdoor opened: ");
   Serial.print(doorOpened);
 
   motionDetected = digitalRead(SR501_PIN);
-
   Serial.print("\tMotion Sensor value: ");
   Serial.println(motionDetected);
 }
 
 void updateAlarmStatus() {
   readSensors();
-  if (armStatus) {
+  if (config.armStatus) {
     if ((doorSensorEnabled && doorOpened) || (motionSensorEnabled && motionDetected)) {
       if (!alarmStatus) {
         //start alarm
@@ -195,6 +202,9 @@ void tickModem() {
         readFromModemUntilOK();
         answer();
       }
+    } else {
+      delay(5000);
+      hangup();
     }
   } else if (call.status == NO_CALL) {
     if (!initiateNextCall()) {
@@ -207,7 +217,7 @@ void tickModem() {
 
 bool initiateNextCall() {
   if (targetCallIndex >= 8) return false;
-  byte bit = bitRead(call_to, targetCallIndex);
+  byte bit = bitRead(config.callTo, targetCallIndex);
   if (!bit) {
     targetCallIndex++;
     return true;
@@ -245,7 +255,8 @@ void parseBalance() {
 void callToThisNumber(String phoneNumber, bool enable) {
   int index = ALLOW_INCOME_NUMBERS.indexOf(phoneNumber);
   index = index / NUMBER_LENGTH;
-  bitSet(call_to, enable);
+  bitSet(config.callTo, enable);
+  configFile.commit();
 }
 
 void processDTMF(String phoneNumber) {
@@ -254,17 +265,19 @@ void processDTMF(String phoneNumber) {
     uint8_t code = dtmfCodes[i] - '0';
     if (dtmfMenu == 0) {
       if (code == 1) {
-        if (!armStatus && !doorOpened && !motionDetected) {
-          armStatus = true;
+        if (!config.armStatus && !doorOpened && !motionDetected) {
+          config.armStatus = true;
+          configFile.commit();
           playSound("arm.amr");
         } else {
           playSound("error.amr");
         }
       } else if (code == 2) {
-        armStatus = false;
+        config.armStatus = false;
+        configFile.commit();
         playSound("disarm.amr");
       } else if (code == 3) {
-        if (!armStatus) {
+        if (!config.armStatus) {
           playSound("disarm.amr");  //disarmed
         } else if (!alarmStatus) {
           playSound("arm.amr");  //armed, no alarm
@@ -413,4 +426,14 @@ void blinkAsync() {
       lastBlinkMillis = millis();
     }
   }
+}
+
+void printConfig() {
+  Serial.print("Version: ");
+  Serial.print(configFile.getVersion());
+  Serial.print(" { callTo = ");
+  Serial.print(config.callTo, BIN);
+  Serial.print(" , armStatus = ");
+  Serial.print(config.armStatus);
+  Serial.println(" }");
 }
