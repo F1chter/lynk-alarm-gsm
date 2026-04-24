@@ -16,7 +16,7 @@
 //#define IP5306_IRQ 39
 
 struct Config {
-  uint8_t callTo = 0b00000001; //call to first, 0b00000011 call to first and second, etc
+  uint8_t callTo = 0b00000000; //call to first, 0b00000011 call to first and second, etc
   bool armStatus = false;
 } config;
 LynkFile configFile(&LittleFS, "/config.cfg", 1, &config, sizeof(config));
@@ -33,7 +33,7 @@ unsigned long lastAlarmMillis;
 unsigned long lastDoorOpenedDetected;
 unsigned long lastMotionDetected;
 unsigned long lastSensorReadMillis;
-unsigned long startWarmupMillis;
+//unsigned long startWarmupMillis;
 int targetCallIndex = 8;
 uint8_t alarmInitiatedBy = 0;
 bool needToRecheckBalance = true;
@@ -45,9 +45,8 @@ int dtmfMenu = 0;
 #define DOOR_SENSOR_DELAY 5000           //5s display as opened after close for minimize jigle
 #define MOTION_SENSOR_DELAY 4000           //3s delay on fire detection for minimize false alarm
 #define DOOR_OPENED_COUNT_FIRE 3
-//#define MOTION_DETECTED_COUNT_FIRE 3
 #define SENSOR_READ_INTERVAL 100  //100ms
-#define WARMUP_PERIOD 30000 //30s
+//#define WARMUP_PERIOD 30000 //30s
 
 uint8_t blinkRemain = 0;
 bool blinkState = false;
@@ -97,7 +96,7 @@ void setup() {
   lastAlarmMillis = millis();
   lastDoorOpenedDetected = millis();
   lastSensorReadMillis = millis();
-  startWarmupMillis = millis();
+  //startWarmupMillis = millis();
   Serial.println("setup end");
 }
 
@@ -133,7 +132,9 @@ void readSensors() {
   //Serial.print("Door sensor value: ");
   //Serial.print(rawAnalogDoorSensor);
   if (rawAnalogDoorSensor < 512) {
-    doorOpenedCount++;
+    if(!doorOpened) {
+      doorOpenedCount++;
+    }
     lastDoorOpenedDetected = millis();
   } else {
     doorOpenedCount = 0;
@@ -170,12 +171,10 @@ void readSensors() {
 
 void updateAlarmStatus() {
   readSensors();
-  if (millis() - startWarmupMillis < WARMUP_PERIOD) {
-    //ignore sensors states during warmup period
-    doorOpened = false;
-    motionDetected = false;
-    return;
-  }
+  //if (millis() - startWarmupMillis < WARMUP_PERIOD) {
+  //  //ignore sensors states during warmup period
+  //  return;
+  //}
   if (config.armStatus) {
     if ((doorSensorEnabled && doorOpened) || (motionSensorEnabled && motionDetected)) {
       if (!alarmStatus) {
@@ -301,7 +300,7 @@ void processDTMF(String phoneNumber) {
         if (!config.armStatus && !doorOpened && !motionDetected) {
           config.armStatus = true;
           configFile.commit();
-          startWarmupMillis = millis();
+          //startWarmupMillis = millis();
           playSound("arm.amr");
         } else {
           playSound("error.amr");
