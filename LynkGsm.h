@@ -1,7 +1,7 @@
 #pragma once
 #include "Arduino.h"
 
-#define DEBUG_ENABLED true
+//#define DEBUG_ENABLED true
 
 #define LYNK_GSM_VERSION "0.1"
 
@@ -98,8 +98,6 @@ uint8_t readFromModem(uint32_t timeout_ms, String& buffer,
   buffer.reserve(2);
   uint8_t index = 0;
   uint32_t startMillis = millis();
-  Serial.print("timeout = "); 
-  Serial.println(timeout_ms);
   do {
     LYNK_GSM_YIELD();
     while (modem.available()) {
@@ -126,9 +124,10 @@ uint8_t readFromModem(uint32_t timeout_ms, String& buffer,
       }
     }
   } while (millis() - startMillis < timeout_ms && !index);
-  Serial.print("passed = "); 
-  Serial.println(millis() - startMillis);
+ 
 #ifdef DEBUG_ENABLED
+  Serial.print("readFromModem takes(ms): "); 
+  Serial.println(millis() - startMillis);
   if (buffer.length()) {
     Serial.print("GSM Response:");
     Serial.println(buffer);

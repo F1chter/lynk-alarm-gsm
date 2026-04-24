@@ -25,12 +25,15 @@ bool alarmStatus = false;
 bool doorOpened = false;      //door sensor
 bool motionDetected = false;  //motion sensor
 uint8_t doorOpenedCount = 0;
-uint8_t motionDetectedCount = 0;
+//uint8_t motionDetectedCount = 0;
 bool doorSensorEnabled = true;
 bool motionSensorEnabled = true;
+bool motionStarted = false;
 unsigned long lastAlarmMillis;
 unsigned long lastDoorOpenedDetected;
+unsigned long lastMotionDetected;
 unsigned long lastSensorReadMillis;
+unsigned long startWarmupMillis;
 int targetCallIndex = 8;
 uint8_t alarmInitiatedBy = 0;
 bool needToRecheckBalance = true;
@@ -40,9 +43,11 @@ int dtmfMenu = 0;
 
 #define ALARM_DURATION_MS 1000 * 60 * 5  //5min
 #define DOOR_SENSOR_DELAY 5000           //5s display as opened after close for minimize jigle
-#define DOOR_OPENED_COUNT_FIRE 5
+#define MOTION_SENSOR_DELAY 4000           //3s delay on fire detection for minimize false alarm
+#define DOOR_OPENED_COUNT_FIRE 3
 //#define MOTION_DETECTED_COUNT_FIRE 3
 #define SENSOR_READ_INTERVAL 100  //100ms
+#define WARMUP_PERIOD 30000 //30s
 
 uint8_t blinkRemain = 0;
 bool blinkState = false;
@@ -92,22 +97,23 @@ void setup() {
   lastAlarmMillis = millis();
   lastDoorOpenedDetected = millis();
   lastSensorReadMillis = millis();
+  startWarmupMillis = millis();
   Serial.println("setup end");
 }
 
 void loop() {
-  Serial.println("loop start...");
+  //Serial.println("loop start...");
   updateAlarmStatus();
 
   //int rawAnalogVoltage = analogReadMilliVolts(BATT_VOLTAGE_PIN) * 2;
   //Serial.print("Voltage value: ");
   //Serial.println(rawAnalogVoltage);
 
-  if(blinkRemain < 1 && millis() - lastBlinkMillis > BLINK_PAUSE_DURATION) {
-    blinkRemain = IP5306_LEDS2FOUR(IP5306_GetLevelLeds());
-    lastBlinkMillis = millis();
-  }
-  blinkAsync();
+  //if(blinkRemain < 1 && millis() - lastBlinkMillis > BLINK_PAUSE_DURATION) {
+  //  blinkRemain = IP5306_LEDS2FOUR(IP5306_GetLevelLeds());
+  //  lastBlinkMillis = millis();
+  //}
+  //blinkAsync();
 
   //clear all previus responses and unsolicited response codes
   readFromModemUntilOK(100L);
@@ -116,7 +122,7 @@ void loop() {
   }
 
   delay(100);
-  Serial.println("loop end");
+  //Serial.println("loop end");
 }
 
 void readSensors() {
@@ -124,30 +130,52 @@ void readSensors() {
     return;
 
   int rawAnalogDoorSensor = analogRead(DOOR_SENSOR_PIN);
-  Serial.print("Door sensor value: ");
-  Serial.print(rawAnalogDoorSensor);
+  //Serial.print("Door sensor value: ");
+  //Serial.print(rawAnalogDoorSensor);
   if (rawAnalogDoorSensor < 512) {
     doorOpenedCount++;
     lastDoorOpenedDetected = millis();
   } else {
     doorOpenedCount = 0;
     if (doorOpened && millis() - lastDoorOpenedDetected > DOOR_SENSOR_DELAY) {
+      Serial.println("Door closed");
       doorOpened = false;
     }
   }
-  if (doorOpenedCount >= DOOR_OPENED_COUNT_FIRE) {
+  if (!doorOpened && doorOpenedCount >= DOOR_OPENED_COUNT_FIRE) {
+    Serial.println("Door opened");
     doorOpened = true;
   }
-  Serial.print("\tdoor opened: ");
-  Serial.print(doorOpened);
 
-  motionDetected = digitalRead(SR501_PIN);
-  Serial.print("\tMotion Sensor value: ");
-  Serial.println(motionDetected);
+  bool motionDetectedNew = digitalRead(SR501_PIN);
+  if(motionDetectedNew) {
+    if(!motionStarted) {
+      lastMotionDetected = millis();
+      motionStarted = true;
+    } else if(!motionDetected && millis() - lastMotionDetected > MOTION_SENSOR_DELAY) {
+      motionDetected = motionDetectedNew;
+      Serial.println("Motion detected");
+    }
+  } else {
+    if(motionStarted && millis() - lastMotionDetected > MOTION_SENSOR_DELAY) {
+      if(motionDetected) {
+          motionDetected = false;
+          Serial.println("Motion stopped");
+      }
+      motionStarted = false;
+      Serial.println("Reset timer");
+    }
+  }
 }
 
 void updateAlarmStatus() {
   readSensors();
+  if (millis() - startWarmupMillis < WARMUP_PERIOD) {
+    //ignore sensors states during warmup period
+    doorOpened = false;
+    motionDetected = false;
+    return;
+  }
   if (config.armStatus) {
     if ((doorSensorEnabled && doorOpened) || (motionSensorEnabled && motionDetected)) {
       if (!alarmStatus) {
@@ -255,7 +283,12 @@ void parseBalance() {
 void callToThisNumber(String phoneNumber, bool enable) {
   int index = ALLOW_INCOME_NUMBERS.indexOf(phoneNumber);
   index = index / NUMBER_LENGTH;
-  bitSet(config.callTo, enable);
+  if(index<0 || index >= 8) return; //Unexpexted behaviour
+  if(enable) {
+    bitSet(config.callTo, index);
+  } else {
+    bitClear(config.callTo, index);
+  }
   configFile.commit();
 }
 
@@ -268,6 +301,7 @@ void processDTMF(String phoneNumber) {
         if (!config.armStatus && !doorOpened && !motionDetected) {
           config.armStatus = true;
           configFile.commit();
+          startWarmupMillis = millis();
           playSound("arm.amr");
         } else {
           playSound("error.amr");
@@ -275,6 +309,7 @@ void processDTMF(String phoneNumber) {
       } else if (code == 2) {
         config.armStatus = false;
         configFile.commit();
+        targetCallIndex = 8;
         playSound("disarm.amr");
       } else if (code == 3) {
         if (!config.armStatus) {
