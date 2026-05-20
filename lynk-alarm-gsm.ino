@@ -1,13 +1,16 @@
+//TODO CALL WHEN POWER ON
+
 #define NUMBER_LENGTH 13
 #include <Wire.h>
 #include "LynkIP5306.h"
 #include "LynkGsm.h"
 #include <LittleFS.h>
 #include "LynkFile.h"
-#include "secrets.h"
+#include "LynkTelegramBot.h"
+//#include "secrets.h"
 
 #define DOOR_SENSOR_PIN 34
-#define SR501_PIN 15
+#define MOTION_SENSOR_PIN 15
 #define LED_PIN 13
 #define I2C_SDA 21
 #define I2C_SCL 22
@@ -16,24 +19,24 @@
 //#define IP5306_IRQ 39
 
 struct Config {
-  uint8_t callTo = 0b00000000; //call to first, 0b00000011 call to first and second, etc
+  uint8_t callTo = 0b00000000;  //call to first, 0b00000011 call to first and second, etc
   bool armStatus = false;
+  bool doorSensorEnabled = true;
+  bool motionSensorEnabled = true;
 } config;
 LynkFile configFile(&LittleFS, "/config.cfg", 1, &config, sizeof(config));
 
+bool connectingToWifi = false;
 bool alarmStatus = false;
-bool doorOpened = false;      //door sensor
-bool motionDetected = false;  //motion sensor
+bool doorOpened = false;
+bool motionDetected = false;
 uint8_t doorOpenedCount = 0;
-//uint8_t motionDetectedCount = 0;
-bool doorSensorEnabled = true;
-bool motionSensorEnabled = true;
-bool motionStarted = false;
-unsigned long lastAlarmMillis;
-unsigned long lastDoorOpenedDetected;
-unsigned long lastMotionDetected;
-unsigned long lastSensorReadMillis;
-//unsigned long startWarmupMillis;
+uint8_t motionDetectedCount = 0;
+uint32_t setupStartMillis;
+uint32_t lastAlarmMillis;
+uint32_t lastDoorOpenedDetected;
+uint32_t lastMotionDetected;
+uint32_t lastSensorReadMillis;
 int targetCallIndex = 8;
 uint8_t alarmInitiatedBy = 0;
 bool needToRecheckBalance = true;
@@ -43,10 +46,12 @@ int dtmfMenu = 0;
 
 #define ALARM_DURATION_MS 1000 * 60 * 5  //5min
 #define DOOR_SENSOR_DELAY 5000           //5s display as opened after close for minimize jigle
-#define MOTION_SENSOR_DELAY 4000           //3s delay on fire detection for minimize false alarm
+#define MOTION_SENSOR_DELAY 4000         //3s delay on fire detection for minimize false alarm
 #define DOOR_OPENED_COUNT_FIRE 3
-#define SENSOR_READ_INTERVAL 100  //100ms
-//#define WARMUP_PERIOD 30000 //30s
+#define MOTION_DETECTED_COUNT_FIRE 5
+#define SENSOR_READ_INTERVAL 100       //100ms
+#define WARMUP_PERIOD 60000            //60s
+#define CONNECT_TO_WIFI_TIMEOUT 20000  //20s
 
 uint8_t blinkRemain = 0;
 bool blinkState = false;
@@ -55,6 +60,7 @@ unsigned long lastBlinkMillis;
 #define BLINK_PAUSE_DURATION 500
 
 void setup() {
+  setupStartMillis = millis();
   //Setup I2C bus(IP5306,)
   Wire.begin(I2C_SDA, I2C_SCL);  //begin ASAP, cause IP5306 can go to non i2c mode
   delay(1000);
@@ -65,19 +71,19 @@ void setup() {
   Serial.println("setup start...");
 
   Serial.println("==========DEFAULT VALUES==========");
-  printConfig(); // print default values
+  printConfig();  // print default values
   LittleFS.begin(true);
   FileStatus fileStatus = configFile.init();
   Serial.println("==========VALUES FROM FLASH==========");
-  printConfig(); // print values from flash
-  
+  printConfig();  // print values from flash
+
   analogReadResolution(10);
-  pinMode(SR501_PIN, INPUT);
+  pinMode(MOTION_SENSOR_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
-  for(int i = 0; i < 3 ; i++) {
+  for (int i = 0; i < 3; i++) {
     digitalWrite(LED_PIN, HIGH);  //indicate esp started
     delay(100);
-    digitalWrite(LED_PIN, LOW);  
+    digitalWrite(LED_PIN, LOW);
     delay(100);
   }
 
@@ -88,11 +94,18 @@ void setup() {
     ESP.restart();
   }
 
+  if (IP5306_GetPowerSource()) {
+    connectingToWifi = true;
+    setupTelegram();
+  }
+
   printIP5306Stats();
   delay(1000);
-  
-  Serial.println("Initializing modem...");
-  setupModem();
+
+  if (!connectingToWifi) {
+    Serial.println("Initializing modem...");
+    setupModem();
+  }
   lastAlarmMillis = millis();
   lastDoorOpenedDetected = millis();
   lastSensorReadMillis = millis();
@@ -102,7 +115,31 @@ void setup() {
 
 void loop() {
   //Serial.println("loop start...");
+  bool oldMotionDetected = motionDetected;
   updateAlarmStatus();
+
+
+  if (connectingToWifi) {
+    if (isWifiConnected()) {
+      tickTelegram();
+      if(!oldMotionDetected && motionDetected) {
+        sendToChat("Motion detected");
+      } else if(oldMotionDetected && !motionDetected ){
+        sendToChat("Motion stopped");
+      }
+    } else if (millis() - setupStartMillis > CONNECT_TO_WIFI_TIMEOUT) {
+      connectingToWifi = false;
+      Serial.println("Initializing modem...");
+      setupModem();
+    }
+  } else {
+    //clear all previus responses and unsolicited response codes
+    readFromModemUntilOK(100L);
+    if (checkModemRegistrationStatus()) {
+      tickModem();
+    }
+  }
+  delay(10);
 
   //int rawAnalogVoltage = analogReadMilliVolts(BATT_VOLTAGE_PIN) * 2;
   //Serial.print("Voltage value: ");
@@ -114,13 +151,6 @@ void loop() {
   //}
   //blinkAsync();
 
-  //clear all previus responses and unsolicited response codes
-  readFromModemUntilOK(100L);
-  if (checkModemRegistrationStatus()) {
-    tickModem();
-  }
-
-  delay(100);
   //Serial.println("loop end");
 }
 
@@ -132,7 +162,7 @@ void readSensors() {
   //Serial.print("Door sensor value: ");
   //Serial.print(rawAnalogDoorSensor);
   if (rawAnalogDoorSensor < 512) {
-    if(!doorOpened) {
+    if (!doorOpened) {
       doorOpenedCount++;
     }
     lastDoorOpenedDetected = millis();
@@ -148,43 +178,38 @@ void readSensors() {
     doorOpened = true;
   }
 
-  bool motionDetectedNew = digitalRead(SR501_PIN);
-  if(motionDetectedNew) {
-    if(!motionStarted) {
-      lastMotionDetected = millis();
-      motionStarted = true;
-    } else if(!motionDetected && millis() - lastMotionDetected > MOTION_SENSOR_DELAY) {
-      motionDetected = motionDetectedNew;
+  bool motionDetectedNew = digitalRead(MOTION_SENSOR_PIN);
+  if (!motionDetected && motionDetectedNew) {
+    lastMotionDetected = millis();
+    motionDetectedCount++;
+    if (motionDetectedCount >= MOTION_DETECTED_COUNT_FIRE) {
+      motionDetected = true;
       Serial.println("Motion detected");
     }
-  } else {
-    if(motionStarted && millis() - lastMotionDetected > MOTION_SENSOR_DELAY) {
-      if(motionDetected) {
-          motionDetected = false;
-          Serial.println("Motion stopped");
-      }
-      motionStarted = false;
-      Serial.println("Reset timer");
-    }
+  } else if (motionDetected && !motionDetectedNew && millis() - lastMotionDetected > MOTION_SENSOR_DELAY) {
+    motionDetected = false;
+    Serial.println("Motion stopped");
+  } else if (motionDetectedNew) {
+    lastMotionDetected = millis();
   }
 }
 
 void updateAlarmStatus() {
   readSensors();
-  //if (millis() - startWarmupMillis < WARMUP_PERIOD) {
-  //  //ignore sensors states during warmup period
-  //  return;
-  //}
+  if (millis() - setupStartMillis < WARMUP_PERIOD) {
+    //ignore sensors states during warmup period
+    return;
+  }
   if (config.armStatus) {
-    if ((doorSensorEnabled && doorOpened) || (motionSensorEnabled && motionDetected)) {
+    if ((config.doorSensorEnabled && doorOpened) || (config.motionSensorEnabled && motionDetected)) {
       if (!alarmStatus) {
         //start alarm
         targetCallIndex = 0;
         alarmInitiatedBy = 0;
         alarmStatus = true;
       }
-      if (doorSensorEnabled && doorOpened) bitSet(alarmInitiatedBy, 0);
-      if (motionSensorEnabled && motionDetected) bitSet(alarmInitiatedBy, 1);
+      if (config.doorSensorEnabled && doorOpened) bitSet(alarmInitiatedBy, 0);
+      if (config.motionSensorEnabled && motionDetected) bitSet(alarmInitiatedBy, 1);
       lastAlarmMillis = millis();
     } else if (alarmStatus) {
       if (millis() - lastAlarmMillis > ALARM_DURATION_MS) {
@@ -282,13 +307,16 @@ void parseBalance() {
 void callToThisNumber(String phoneNumber, bool enable) {
   int index = ALLOW_INCOME_NUMBERS.indexOf(phoneNumber);
   index = index / NUMBER_LENGTH;
-  if(index<0 || index >= 8) return; //Unexpexted behaviour
-  if(enable) {
-    bitSet(config.callTo, index);
-  } else {
-    bitClear(config.callTo, index);
+  if (index < 0 || index >= 8) return;  //Unexpexted behaviour
+  bool oldState = bitRead(config.callTo, index);
+  if(oldState != enable) {
+    if (enable) {
+      bitSet(config.callTo, index);
+    } else {
+      bitClear(config.callTo, index);
+    }
+    configFile.commit();
   }
-  configFile.commit();
 }
 
 void processDTMF(String phoneNumber) {
@@ -297,7 +325,7 @@ void processDTMF(String phoneNumber) {
     uint8_t code = dtmfCodes[i] - '0';
     if (dtmfMenu == 0) {
       if (code == 1) {
-        if (!config.armStatus && !doorOpened && !motionDetected) {
+        if (!config.armStatus && (!config.doorSensorEnabled || !doorOpened) && (config.motionSensorEnabled || !motionDetected)) {
           config.armStatus = true;
           configFile.commit();
           //startWarmupMillis = millis();
@@ -378,10 +406,16 @@ void processDTMF(String phoneNumber) {
       }  //else ignore
     } else if (dtmfMenu == 91) {
       if (code == 1) {
-        doorSensorEnabled = true;
+        if(!config.doorSensorEnabled) {
+          config.doorSensorEnabled = true;
+          configFile.commit();
+        }
         playSound("on.amr");
       } else if (code == 2) {
-        doorSensorEnabled = false;
+        if(config.doorSensorEnabled) {
+          config.doorSensorEnabled = false;
+          configFile.commit();
+        }
         playSound("off.amr");
       } else if (code == 0) {
         playSound("ok.amr");
@@ -389,10 +423,16 @@ void processDTMF(String phoneNumber) {
       dtmfMenu = 0;
     } else if (dtmfMenu == 92) {
       if (code == 1) {
-        motionSensorEnabled = true;
+        if(!config.motionSensorEnabled) {
+          config.motionSensorEnabled = true;
+          configFile.commit();
+        }
         playSound("on.amr");
       } else if (code == 2) {
-        motionSensorEnabled = false;
+        if(config.motionSensorEnabled) {
+          config.motionSensorEnabled = false;
+          configFile.commit();
+        }
         playSound("off.amr");
       } else if (code == 0) {
         playSound("ok.amr");
