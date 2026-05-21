@@ -122,13 +122,15 @@ void loop() {
   if (connectingToWifi) {
     if (isWifiConnected()) {
       tickTelegram();
-      if(!oldMotionDetected && motionDetected) {
+      if (!oldMotionDetected && motionDetected) {
         sendToChat("Motion detected");
-      } else if(oldMotionDetected && !motionDetected ){
+      } else if (oldMotionDetected && !motionDetected) {
         sendToChat("Motion stopped");
       }
     } else if (millis() - setupStartMillis > CONNECT_TO_WIFI_TIMEOUT) {
       connectingToWifi = false;
+      WiFi.mode(WIFI_OFF);
+      WiFi.disconnect(true);
       Serial.println("Initializing modem...");
       setupModem();
     }
@@ -309,7 +311,7 @@ void callToThisNumber(String phoneNumber, bool enable) {
   index = index / NUMBER_LENGTH;
   if (index < 0 || index >= 8) return;  //Unexpexted behaviour
   bool oldState = bitRead(config.callTo, index);
-  if(oldState != enable) {
+  if (oldState != enable) {
     if (enable) {
       bitSet(config.callTo, index);
     } else {
@@ -406,13 +408,13 @@ void processDTMF(String phoneNumber) {
       }  //else ignore
     } else if (dtmfMenu == 91) {
       if (code == 1) {
-        if(!config.doorSensorEnabled) {
+        if (!config.doorSensorEnabled) {
           config.doorSensorEnabled = true;
           configFile.commit();
         }
         playSound("on.amr");
       } else if (code == 2) {
-        if(config.doorSensorEnabled) {
+        if (config.doorSensorEnabled) {
           config.doorSensorEnabled = false;
           configFile.commit();
         }
@@ -423,13 +425,13 @@ void processDTMF(String phoneNumber) {
       dtmfMenu = 0;
     } else if (dtmfMenu == 92) {
       if (code == 1) {
-        if(!config.motionSensorEnabled) {
+        if (!config.motionSensorEnabled) {
           config.motionSensorEnabled = true;
           configFile.commit();
         }
         playSound("on.amr");
       } else if (code == 2) {
-        if(config.motionSensorEnabled) {
+        if (config.motionSensorEnabled) {
           config.motionSensorEnabled = false;
           configFile.commit();
         }
