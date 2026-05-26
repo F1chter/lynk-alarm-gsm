@@ -1,13 +1,17 @@
 //TODO CALL WHEN POWER ON
 
-#define NUMBER_LENGTH 13
+
 #include <Wire.h>
 #include "LynkIP5306.h"
 #include "LynkGsm.h"
 #include <LittleFS.h>
 #include "LynkFile.h"
-#include "LynkTelegramBot.h"
 //#include "secrets.h"
+#include "LynkTelegramBot.h"
+
+#define NUMBER_LENGTH 13
+//predefine admin numbers that can control alarm(up to 8 numbers)
+//const String ALLOW_INCOME_NUMBERS = "+381234567891+381234567892+381234567893+381234567894+381234567895+381234567896+381234567897+381234567898"; 
 
 #define DOOR_SENSOR_PIN 34
 #define MOTION_SENSOR_PIN 15
