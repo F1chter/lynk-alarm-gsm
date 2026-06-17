@@ -1,9 +1,5 @@
-//define WIFI_SSID,WIFI_PASS, BOT_TOKEN, CHAT_ID here or in secrets.h
+
 #include <FastBot2.h>
-//const String WIFI_SSID = "MY_WIFI";
-//const String WIFI_PASS = "MY_PASSWORD";
-//const String BOT_TOKEN = "1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-//const String CHAT_ID = "123456789";
 
 
 FastBot2 bot;

@@ -210,11 +210,20 @@ bool initModem(const char* pinCode = nullptr) {
   return true;
 }
 
-void setupModem() {
+void presetupModem() {
   // setup modem power pins
   pinMode(MODEM_RST, OUTPUT);
   pinMode(MODEM_PWR, OUTPUT);
   pinMode(MODEM_PWR_CONVERTER, OUTPUT);
+  digitalWrite(MODEM_RST, LOW);
+  digitalWrite(MODEM_PWR_CONVERTER, LOW);
+  //digitalWrite(MODEM_PWR, HIGH);
+  //delay(100);
+  digitalWrite(MODEM_PWR, LOW);
+}
+
+void setupModem() {
+  //presetupModem();
   digitalWrite(MODEM_RST, HIGH);
 
   // Turn on the Modem power first

@@ -6,12 +6,8 @@
 #include "LynkGsm.h"
 #include <LittleFS.h>
 #include "LynkFile.h"
-//#include "secrets.h"
+#include "secrets.h"
 #include "LynkTelegramBot.h"
-
-#define NUMBER_LENGTH 13
-//predefine admin numbers that can control alarm(up to 8 numbers)
-//const String ALLOW_INCOME_NUMBERS = "+381234567891+381234567892+381234567893+381234567894+381234567895+381234567896+381234567897+381234567898"; 
 
 #define DOOR_SENSOR_PIN 34
 #define MOTION_SENSOR_PIN 15
@@ -27,8 +23,10 @@ struct Config {
   bool armStatus = false;
   bool doorSensorEnabled = true;
   bool motionSensorEnabled = true;
+  bool gridLostCall = false;
+  bool gridAppearCall = false;
 } config;
-LynkFile configFile(&LittleFS, "/config.cfg", 1, &config, sizeof(config));
+LynkFile configFile(&LittleFS, "/config.cfg", 2, &config, sizeof(config));
 
 bool connectingToWifi = false;
 bool alarmStatus = false;
@@ -47,10 +45,11 @@ bool needToRecheckBalance = true;
 bool needToParseBalance = false;
 int balance = -1;
 int dtmfMenu = 0;
+bool gridPresent = false;
 
 #define ALARM_DURATION_MS 1000 * 60 * 5  //5min
 #define DOOR_SENSOR_DELAY 5000           //5s display as opened after close for minimize jigle
-#define MOTION_SENSOR_DELAY 4000         //3s delay on fire detection for minimize false alarm
+#define MOTION_SENSOR_DELAY 5000         //4s delay on fire detection for minimize false alarm
 #define DOOR_OPENED_COUNT_FIRE 3
 #define MOTION_DETECTED_COUNT_FIRE 5
 #define SENSOR_READ_INTERVAL 100       //100ms
@@ -67,6 +66,7 @@ void setup() {
   setupStartMillis = millis();
   //Setup I2C bus(IP5306,)
   Wire.begin(I2C_SDA, I2C_SCL);  //begin ASAP, cause IP5306 can go to non i2c mode
+  presetupModem();
   delay(1000);
 
   // Set console baud rate
@@ -99,8 +99,12 @@ void setup() {
   }
 
   if (IP5306_GetPowerSource()) {
+    gridPresent = true;
     connectingToWifi = true;
     setupTelegram();
+    if (config.gridAppearCall) {
+      targetCallIndex = 0;
+    }
   }
 
   printIP5306Stats();
@@ -110,10 +114,11 @@ void setup() {
     Serial.println("Initializing modem...");
     setupModem();
   }
-  lastAlarmMillis = millis();
-  lastDoorOpenedDetected = millis();
-  lastSensorReadMillis = millis();
-  //startWarmupMillis = millis();
+
+  lastAlarmMillis = setupStartMillis;
+  lastDoorOpenedDetected = setupStartMillis;
+  lastMotionDetected = setupStartMillis;
+  lastSensorReadMillis = setupStartMillis;
   Serial.println("setup end");
 }
 
@@ -139,6 +144,10 @@ void loop() {
       setupModem();
     }
   } else {
+    bool gridPresentNew = IP5306_GetPowerSource();
+    if (!gridPresentNew && gridPresent && config.gridLostCall) targetCallIndex = 0;
+    if (gridPresentNew && !gridPresent && config.gridAppearCall) targetCallIndex = 0;
+    if (gridPresentNew != gridPresent) gridPresent = gridPresentNew;
     //clear all previus responses and unsolicited response codes
     readFromModemUntilOK(100L);
     if (checkModemRegistrationStatus()) {
@@ -163,7 +172,7 @@ void loop() {
 void readSensors() {
   if (millis() - lastSensorReadMillis < SENSOR_READ_INTERVAL)
     return;
-
+  uint32_t now = millis();
   int rawAnalogDoorSensor = analogRead(DOOR_SENSOR_PIN);
   //Serial.print("Door sensor value: ");
   //Serial.print(rawAnalogDoorSensor);
@@ -171,10 +180,10 @@ void readSensors() {
     if (!doorOpened) {
       doorOpenedCount++;
     }
-    lastDoorOpenedDetected = millis();
+    lastDoorOpenedDetected = now;
   } else {
     doorOpenedCount = 0;
-    if (doorOpened && millis() - lastDoorOpenedDetected > DOOR_SENSOR_DELAY) {
+    if (doorOpened && (now - lastDoorOpenedDetected) > DOOR_SENSOR_DELAY) {
       Serial.println("Door closed");
       doorOpened = false;
     }
@@ -186,17 +195,17 @@ void readSensors() {
 
   bool motionDetectedNew = digitalRead(MOTION_SENSOR_PIN);
   if (!motionDetected && motionDetectedNew) {
-    lastMotionDetected = millis();
+    lastMotionDetected = now;
     motionDetectedCount++;
     if (motionDetectedCount >= MOTION_DETECTED_COUNT_FIRE) {
       motionDetected = true;
       Serial.println("Motion detected");
     }
-  } else if (motionDetected && !motionDetectedNew && millis() - lastMotionDetected > MOTION_SENSOR_DELAY) {
+  } else if (motionDetected && !motionDetectedNew && (now - lastMotionDetected) > MOTION_SENSOR_DELAY) {
     motionDetected = false;
     Serial.println("Motion stopped");
   } else if (motionDetectedNew) {
-    lastMotionDetected = millis();
+    lastMotionDetected = now;
   }
 }
 
@@ -331,7 +340,7 @@ void processDTMF(String phoneNumber) {
     uint8_t code = dtmfCodes[i] - '0';
     if (dtmfMenu == 0) {
       if (code == 1) {
-        if (!config.armStatus && (!config.doorSensorEnabled || !doorOpened) && (config.motionSensorEnabled || !motionDetected)) {
+        if (!config.armStatus && (!config.doorSensorEnabled || !doorOpened) && (!config.motionSensorEnabled || !motionDetected)) {
           config.armStatus = true;
           configFile.commit();
           //startWarmupMillis = millis();
@@ -406,6 +415,12 @@ void processDTMF(String phoneNumber) {
       } else if (code == 3) {
         dtmfMenu = 93;
         playSound("call.amr");
+      } else if (code == 4) {
+        dtmfMenu = 94;
+        playSound("gridlost.amr");
+      } else if (code == 5) {
+        dtmfMenu = 95;
+        playSound("gridappear.amr");
       } else if (code == 0) {
         dtmfMenu = 0;
         playSound("ok.amr");
@@ -455,6 +470,32 @@ void processDTMF(String phoneNumber) {
         playSound("ok.amr");
       }  //else ignore
       dtmfMenu = 0;
+    } else if (dtmfMenu == 94) {
+      if (code == 1) {
+        config.gridLostCall = true;
+        configFile.commit();
+        playSound("on.amr");
+      } else if (code == 2) {
+        config.gridLostCall = false;
+        configFile.commit();
+        playSound("off.amr");
+      } else if (code == 0) {
+        playSound("ok.amr");
+      }  //else ignore
+      dtmfMenu = 0;
+    } else if (dtmfMenu == 95) {
+      if (code == 1) {
+        config.gridAppearCall = true;
+        configFile.commit();
+        playSound("on.amr");
+      } else if (code == 2) {
+        config.gridAppearCall = false;
+        configFile.commit();
+        playSound("off.amr");
+      } else if (code == 0) {
+        playSound("ok.amr");
+      }  //else ignore
+      dtmfMenu = 0;
     }
   }
 }
@@ -486,7 +527,8 @@ discharged.amr
 call.amr
 balance.amr
 low.amr
-
+gridlost.amr
+gridappear.amr
 */
 
 //blink by builtin blue led
